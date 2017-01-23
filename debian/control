@@ -12,7 +12,7 @@ Standards-Version: 3.9.6
 Homepage: https://microsoft.github.io/PTVS/
 
 Package: python-ptvsd
-Architecture: any
+Architecture: all
 Depends: ${misc:Depends}, ${python:Depends}, ${shlibs:Depends}
 Description: Python Tools for Visual Studio remote debugging server
  PTVS is a free, open source plugin that turns Visual Studio into a Python IDE.
@@ -24,7 +24,7 @@ Description: Python Tools for Visual Studio remote debugging server
  Designed, developed, and supported by Microsoft and the community.
 
 Package: python3-ptvsd
-Architecture: any
+Architecture: all
 Depends: ${misc:Depends}, ${python3:Depends}, ${shlibs:Depends}
 Description: Python Tools for Visual Studio remote debugging server
  PTVS is a free, open source plugin that turns Visual Studio into a Python IDE.
