@@ -1,0 +1,7 @@
+#!/usr/bin/make -f
+
+export PYBUILD_SYSTEM=pybuild
+export PYBUILD_NAME=ptvsd
+
+%:
+	dh $@ --with python2,python3
