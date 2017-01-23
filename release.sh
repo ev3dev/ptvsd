@@ -16,4 +16,6 @@ gbp buildpackage --git-tag-only
 ssh ev3dev@reprepro.ev3dev.org "reprepro -b ~/reprepro/raspbian includedsc jessie \
     ~/reprepro/debian/pool/main/${source:0:1}/${source}/${source}_${version}.dsc"
 ssh ev3dev@reprepro.ev3dev.org "reprepro -b ~/reprepro/raspbian includedeb jessie \
-    ~/reprepro/debian/pool/main/${source:0:1}/${source}/ev3dev-tools_${version}_all.deb"
+    ~/reprepro/debian/pool/main/${source:0:1}/${source}/python-ptvsd_${version}_all.deb"
+ssh ev3dev@reprepro.ev3dev.org "reprepro -b ~/reprepro/raspbian includedeb jessie \
+    ~/reprepro/debian/pool/main/${source:0:1}/${source}/python3-ptvsd_${version}_all.deb"
