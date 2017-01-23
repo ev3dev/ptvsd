@@ -3,10 +3,12 @@ Upstream-Name: python-gattlib
 Source: https://bitbucket.org/OscarAcena/pygattlib
 
 Files: debian/*
-Copyright: David Lechner <david@lechnology.com>
-License: GPL2
+Copyright: 2017 David Lechner <david@lechnology.com>
+License: GPL
+ See /usr/share/common-licenses/GPL-2
 
 Files: *
-Copyright: Microsoft Corporation
-License: ALv2
+Copyright: (C) Microsoft Corporation
+License: Apache
+ See /usr/share/common-licenses/Apache-2.0
  

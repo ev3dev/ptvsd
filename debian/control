@@ -17,7 +17,9 @@ Depends: ${misc:Depends}, ${python:Depends}, ${shlibs:Depends}
 Description: Python Tools for Visual Studio remote debugging server
  PTVS is a free, open source plugin that turns Visual Studio into a Python IDE.
  .
- It supports CPython, IronPython, editing, browsing, IntelliSense, mixed Python/C++ debugging, remote Linux/MacOS debugging, profiling, IPython, and web development with Django and other frameworks.
+ It supports CPython, IronPython, editing, browsing, IntelliSense, mixed
+ Python/C++ debugging, remote Linux/MacOS debugging, profiling, IPython, and
+ web development with Django and other frameworks.
  .
  Designed, developed, and supported by Microsoft and the community.
 
@@ -27,6 +29,8 @@ Depends: ${misc:Depends}, ${python3:Depends}, ${shlibs:Depends}
 Description: Python Tools for Visual Studio remote debugging server
  PTVS is a free, open source plugin that turns Visual Studio into a Python IDE.
  .
- It supports CPython, IronPython, editing, browsing, IntelliSense, mixed Python/C++ debugging, remote Linux/MacOS debugging, profiling, IPython, and web development with Django and other frameworks.
+ It supports CPython, IronPython, editing, browsing, IntelliSense, mixed
+ Python/C++ debugging, remote Linux/MacOS debugging, profiling, IPython, and
+ web development with Django and other frameworks.
  .
  Designed, developed, and supported by Microsoft and the community.
