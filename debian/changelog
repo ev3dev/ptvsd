@@ -1,5 +1,5 @@
-ptvsd (2.2.0-1ev3dev1~1) stable; urgency=medium
+ptvsd (2.2.0-1ev3dev1) stable; urgency=medium
 
   * Initial version
 
- -- David Lechner <david@lechnology.com>  Tue, 17 Jan 2017 12:16:49 -0600
+ -- David Lechner <david@lechnology.com>  Sun, 22 Jan 2017 23:57:30 -0600
