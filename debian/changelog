@@ -1,3 +1,9 @@
+ptvsd (3.0.0~rc1-1ev3dev1) stable; urgency=medium
+
+  * Imported Upstream version 3.0.0~rc1
+
+ -- David Lechner <david@lechnology.com>  Mon, 23 Jan 2017 01:14:50 -0600
+
 ptvsd (2.2.0-1ev3dev2) stable; urgency=medium
 
   * Change to Architecture: all
