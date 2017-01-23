@@ -1,3 +1,9 @@
+ptvsd (2.2.0-1ev3dev2) stable; urgency=medium
+
+  * Change to Architecture: all
+
+ -- David Lechner <david@lechnology.com>  Mon, 23 Jan 2017 00:12:34 -0600
+
 ptvsd (2.2.0-1ev3dev1) stable; urgency=medium
 
   * Initial version
