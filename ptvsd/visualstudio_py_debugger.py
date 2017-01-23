@@ -1,18 +1,23 @@
- # ############################################################################
- #
- # Copyright (c) Microsoft Corporation. 
- #
- # This source code is subject to terms and conditions of the Apache License, Version 2.0. A 
- # copy of the license can be found in the License.html file at the root of this distribution. If 
- # you cannot locate the Apache License, Version 2.0, please send an email to 
- # vspython@microsoft.com. By using this source code in any fashion, you are agreeing to be bound 
- # by the terms of the Apache License, Version 2.0.
- #
- # You must not remove this notice, or any other, from this software.
- #
- # ###########################################################################
+# Python Tools for Visual Studio
+# Copyright(c) Microsoft Corporation
+# All rights reserved.
+# 
+# Licensed under the Apache License, Version 2.0 (the License); you may not use
+# this file except in compliance with the License. You may obtain a copy of the
+# License at http://www.apache.org/licenses/LICENSE-2.0
+# 
+# THIS CODE IS PROVIDED ON AN  *AS IS* BASIS, WITHOUT WARRANTIES OR CONDITIONS
+# OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY
+# IMPLIED WARRANTIES OR CONDITIONS OF TITLE, FITNESS FOR A PARTICULAR PURPOSE,
+# MERCHANTABLITY OR NON-INFRINGEMENT.
+# 
+# See the Apache Version 2.0 License for specific language governing
+# permissions and limitations under the License.
 
 from __future__ import with_statement
+
+__author__ = "Microsoft Corporation <ptvshelp@microsoft.com>"
+__version__ = "3.0.0.0"
 
 # This module MUST NOT import threading in global scope. This is because in a direct (non-ptvsd)
 # attach scenario, it is loaded on the injected debugger attach thread, and if threading module
@@ -455,8 +460,7 @@ class ExceptionBreakInfo(object):
         if break_type:
             if issubclass(ex_type, SystemExit):
                 if not BREAK_ON_SYSTEMEXIT_ZERO:
-                    if ((isinstance(ex_value, int) and not ex_value) or 
-                        (isinstance(ex_value, SystemExit) and not ex_value.code)):
+                    if not ex_value or (isinstance(ex_value, SystemExit) and not ex_value.code):
                         break_type = BREAK_TYPE_NONE
 
         return break_type
@@ -642,9 +646,12 @@ class DjangoBreakpointInfo(object):
                     line_info = []
                     file_len = 0
                     for line in contents:
+                        line_len = len(line)
                         if not line_info and line.startswith(BOM_UTF8):
-                            line = line[3:] # Strip the BOM, Django seems to ignore this...
-                        file_len += len(line)
+                            line_len -= len(BOM_UTF8) # Strip the BOM, Django seems to ignore this...
+                        if line.endswith(to_bytes('\r\n')):
+                            line_len -= 1 # Django normalizes newlines to \n
+                        file_len += line_len
                         line_info.append(file_len)
                     contents.close()
                     self._line_locations = line_info
@@ -675,10 +682,26 @@ class DjangoBreakpointInfo(object):
 def get_django_frame_source(frame):
     if frame.f_code.co_name == 'render':
         self_obj = frame.f_locals.get('self', None)
-        if self_obj is not None and type(self_obj).__name__ != 'TextNode':
-            source_obj = getattr(self_obj, 'source', None)
-            if source_obj is not None:
-                return source_obj
+        if self_obj is None:
+            return None
+        name = type(self_obj).__name__
+        if name in ('Template', 'TextNode'):
+            return None
+        source_obj = getattr(self_obj, 'source', None)
+        if source_obj and hasattr(source_obj, '__len__') and len(source_obj) == 2:
+            return str(source_obj[0]), source_obj[1]
+
+        token_obj = getattr(self_obj, 'token', None)
+        if token_obj is None:
+            return None
+        template_obj = getattr(frame.f_locals.get('context', None), 'template', None)
+        if template_obj is None:
+            return None
+        template_name = getattr(template_obj, 'origin', None)
+        position = getattr(token_obj, 'position', None)
+        if template_name and position:
+            return str(template_name), position
+
 
     return None
 
@@ -879,8 +902,8 @@ class Thread(object):
             source_obj = get_django_frame_source(frame)
             if source_obj is not None:
                 origin, (start, end) = source_obj
-                    
-                active_bps = DJANGO_BREAKPOINTS.get(origin.name.lower())
+                
+                active_bps = DJANGO_BREAKPOINTS.get(origin.lower())
                 should_break = False
                 if active_bps is not None:
                     should_break, bkpt_id = active_bps.should_break(start, end)
@@ -1599,6 +1622,7 @@ class DebuggerLoop(object):
             to_bytes('brka') : self.command_break_all,
             to_bytes('resa') : self.command_resume_all,
             to_bytes('rest') : self.command_resume_thread,
+            to_bytes('thrf') : self.command_get_thread_frames,
             to_bytes('ares') : self.command_auto_resume,
             to_bytes('exec') : self.command_execute_code,
             to_bytes('chld') : self.command_enum_children,
@@ -1781,6 +1805,13 @@ class DebuggerLoop(object):
         global SEND_BREAK_COMPLETE
         SEND_BREAK_COMPLETE = True
         mark_all_threads_for_break()
+
+    def command_get_thread_frames(self):
+        tid = read_int(self.conn)
+        THREADS_LOCK.acquire()
+        thread = THREADS[tid]
+        THREADS_LOCK.release()
+        thread.enum_thread_frames_locally()
 
     def command_resume_all(self):
         # resume all
@@ -2189,7 +2220,7 @@ def attach_process_from_socket(sock, debug_options, report = False, block = Fals
     def _excepthook(exc_type, exc_value, exc_tb):
         # Display the exception and wait on exit
         if exc_type is SystemExit:
-            if (wait_on_abnormal_exit and exc_value.code != 0) or (wait_on_normal_exit and exc_value.code == 0):
+            if (wait_on_abnormal_exit and exc_value.code) or (wait_on_normal_exit and not exc_value.code):
                 print_exception(exc_type, exc_value, exc_tb)
                 do_wait()
         else:
