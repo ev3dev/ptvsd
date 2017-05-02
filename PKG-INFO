@@ -1,7 +1,7 @@
 Metadata-Version: 1.1
 Name: ptvsd
-Version: 3.0.0rc1
-Summary: Python Tools for Visual Studio remote debugging server
+Version: 3.1.0rc1
+Summary: Visual Studio remote debugging server for Python
 Home-page: https://aka.ms/ptvs
 Author: Microsoft Corporation
 Author-email: ptvshelp@microsoft.com
