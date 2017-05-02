@@ -1,3 +1,10 @@
+ptvsd (3.1.0~rc1-1ev3dev1) testing; urgency=medium
+
+  * Imported Upstream version 3.1.0~rc1
+  * Target stretch
+
+ -- David Lechner <david@lechnology.com>  Tue, 02 May 2017 18:02:35 -0500
+
 ptvsd (3.0.0~rc1-1ev3dev1) stable; urgency=medium
 
   * Imported Upstream version 3.0.0~rc1
