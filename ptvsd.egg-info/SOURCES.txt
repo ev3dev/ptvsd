@@ -1,0 +1,14 @@
+setup.cfg
+setup.py
+ptvsd/__init__.py
+ptvsd/__main__.py
+ptvsd/attach_server.py
+ptvsd/debugger.py
+ptvsd/ipcjson.py
+ptvsd/util.py
+ptvsd.egg-info/PKG-INFO
+ptvsd.egg-info/SOURCES.txt
+ptvsd.egg-info/dependency_links.txt
+ptvsd.egg-info/top_level.txt
+ptvsd/repl/__init__.py
+ptvsd/repl/ipython.py

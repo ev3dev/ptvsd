@@ -14,10 +14,10 @@
 # See the Apache Version 2.0 License for specific language governing
 # permissions and limitations under the License.
 
-from __future__ import with_statement
+from __future__ import with_statement, print_function
 
 __author__ = "Microsoft Corporation <ptvshelp@microsoft.com>"
-__version__ = "3.1.0.0"
+__version__ = "3.2.1.0"
 
 # This module MUST NOT import threading in global scope. This is because in a direct (non-ptvsd)
 # attach scenario, it is loaded on the injected debugger attach thread, and if threading module
@@ -43,41 +43,16 @@ import runpy
 import datetime
 from codecs import BOM_UTF8
 
-try:
-    # In the local attach scenario, visualstudio_py_util is injected into globals()
-    # by PyDebugAttach before loading this module, and cannot be imported.
-    _vspu = visualstudio_py_util
-except:
-    try:
-        import visualstudio_py_util as _vspu
-    except ImportError:
-        import ptvsd.visualstudio_py_util as _vspu
-
-try:
-    # In the local attach scenario, visualstudio_py_ipcjson is injected into globals()
-    # by PyDebugAttach before loading this module, and cannot be imported.
-    _vsipc = visualstudio_py_ipcjson
-except:
-    try:
-        import visualstudio_py_ipcjson as _vsipc
-    except ImportError:
-        import ptvsd.visualstudio_py_ipcjson as _vsipc
+import ptvsd
+import ptvsd.util as _vspu
+import ptvsd.ipcjson as _vsipc
+import ptvsd.repl as _vspr
 
 to_bytes = _vspu.to_bytes
 exec_file = _vspu.exec_file
 exec_module = _vspu.exec_module
 exec_code = _vspu.exec_code
 safe_repr = _vspu.SafeRepr()
-
-try:
-    # In the local attach scenario, visualstudio_py_repl is injected into globals()
-    # by PyDebugAttach before loading this module, and cannot be imported.
-    _vspr = visualstudio_py_repl
-except:
-    try:
-        import visualstudio_py_repl as _vspr
-    except ImportError:
-        import ptvsd.visualstudio_py_repl as _vspr
 
 try:
     import stackless
@@ -94,6 +69,25 @@ if sys.platform == 'cli':
     from System.Runtime.CompilerServices import ConditionalWeakTable
     IPY_SEEN_MODULES = ConditionalWeakTable[object, object]()
 
+    clr.AddReference('Microsoft.Dynamic')
+    clr.AddReference('Microsoft.Scripting')
+    clr.AddReference('IronPython')
+    from Microsoft.Scripting import KeyboardInterruptException
+    from Microsoft.Scripting import ParamDictionaryAttribute
+    from IronPython.Runtime.Operations import PythonOps
+    from IronPython.Runtime import PythonContext
+    from Microsoft.Scripting import SourceUnit, SourceCodeKind
+    from Microsoft.Scripting.Runtime import Scope
+
+    python_context = clr.GetCurrentRuntime().GetLanguage(PythonContext)
+
+    from System import DBNull, ParamArrayAttribute
+    builtin_method_descriptor_type = type(list.append)
+
+    import System
+    NamespaceType = type(System)
+
+
 # Import encodings early to avoid import on the debugger thread, which may cause deadlock
 from encodings import utf_8
 
@@ -103,6 +97,13 @@ from encodings import utf_8
 # save start_new_thread so we can call it later, we'll intercept others calls to it.
 
 debugger_dll_handle = None
+
+# Called by PyDebugAttach
+def set_debugger_dll_handle(handle):
+    global debugger_dll_handle
+    debugger_dll_handle = handle
+
+
 DETACHED = True
 def thread_creator(func, args, kwargs = {}, *extra_args):
     if not isinstance(args, tuple):
@@ -153,13 +154,22 @@ class SynthesizedValue(object):
     def __len__(self):
         return self.len_value
 
+IMPORTLIB_BOOTSTRAP = []
+if sys.version_info >= (3, 3):
+    IMPORTLIB_BOOTSTRAP.append(path.normcase('<frozen importlib._bootstrap>'))
+if sys.version_info >= (3, 5):
+    IMPORTLIB_BOOTSTRAP.append(path.normcase('<frozen importlib._bootstrap_external>'))
+
 # Specifies list of files not to debug. Can be extended by other modules
 # (the REPL does this for $attach support and not stepping into the REPL).
-DONT_DEBUG = [path.normcase(__file__), path.normcase(_vspu.__file__)]
-if sys.version_info >= (3, 3):
-    DONT_DEBUG.append(path.normcase('<frozen importlib._bootstrap>'))
-if sys.version_info >= (3, 5):
-    DONT_DEBUG.append(path.normcase('<frozen importlib._bootstrap_external>'))
+DONT_DEBUG = IMPORTLIB_BOOTSTRAP + [
+    path.normcase(__file__),
+    path.normcase(ptvsd.__file__),
+    path.normcase(_vspu.__file__),
+    path.normcase(_vspr.__file__),
+    path.normcase(_vsipc.__file__),
+]
+
 
 # Contains information about all breakpoints in the process. Keys are line numbers on which
 # there are breakpoints in any file, and values are dicts. For every line number, the
@@ -546,15 +556,21 @@ if hasattr(sys, 'base_prefix'):
 if hasattr(sys, 'real_prefix'):
     PREFIXES.append(path.normcase(sys.real_prefix))
 
+def is_stdlib(filename):
+    if not DEBUG_STDLIB:
+        if filename in IMPORTLIB_BOOTSTRAP:
+            return True
+        for prefix in PREFIXES:
+            if prefix != '' and filename.startswith(prefix):
+                return True
+
 def should_debug_code(code):
     if not code or not code.co_filename:
         return False
 
     filename = path.normcase(code.co_filename)
-    if not DEBUG_STDLIB:
-        for prefix in PREFIXES:
-            if prefix != '' and filename.startswith(prefix):
-                return False
+    if is_stdlib(filename):
+        return False
 
     for dont_debug_file in DONT_DEBUG:
         if is_same_py_file(filename, dont_debug_file):
@@ -719,6 +735,16 @@ class ModuleExitFrame(object):
 
 class Thread(object):
     def __init__(self, id = None):
+        # Replace some methods with their bound versions, so that bound wrappers aren't recreated on every access.
+        self.trace_func = self.trace_func
+        self.handle_line = self.handle_line
+        self.handle_call = self.handle_call
+        self.push_frame = self.push_frame
+        self.pop_frame = self.pop_frame
+        self.should_block_on_frame = self.should_block_on_frame
+        self.block = self.block
+        self.block_maybe_attach = self.block_maybe_attach
+
         if id is not None:
             self.id = id 
         else:
@@ -741,12 +767,12 @@ class Thread(object):
         self._is_working = False
         self.stopped_on_line = None
         self.detach = False
-        self.trace_func = self.trace_func # replace self.trace_func w/ a bound method so we don't need to re-create these regularly
         self.prev_trace_func = None
         self.trace_func_stack = []
         self.reported_process_loaded = False
         self.django_stepping = None
         self.is_sending = False
+        self.is_importing_stdlib = False
 
         # stackless changes
         if stackless is not None:
@@ -775,6 +801,7 @@ class Thread(object):
     def _stackless_attach(self):
         try:
             stackless.tasklet.trace_function
+            stackless.set_schedule_callback(self._stackless_schedule_cb)
         except AttributeError:
             # the tasklets need to be traced on a case by case basis
             # sys.trace needs to be called within their calling context
@@ -861,8 +888,9 @@ class Thread(object):
             current.trace_function = current_tf
 
     def trace_func(self, frame, event, arg):
-        # If we're so far into process shutdown that sys is already gone, just stop tracing.
-        if sys is None:
+        # If we're so far into process shutdown that modules are being unloaded, stop tracing
+        # since we can't rely on any modules we've imported to still be working.
+        if sys is None or not sys.modules:
             return None
         elif self.is_sending:
             # https://pytools.codeplex.com/workitem/1864 
@@ -898,8 +926,42 @@ class Thread(object):
         except (StackOverflowException, KeyboardInterrupt):
             # stack overflow, disable tracing
             return self.trace_func
-    
+
     def handle_call(self, frame, arg):
+        f_code = frame.f_code
+        co_name = f_code.co_name
+        co_filename = f_code.co_filename
+
+        # If we're importing stdlib, don't trace nested calls until we return from the import that started it,
+        # but notify the user if these nested calls end up in non-stdlib code.
+        if self.is_importing_stdlib:
+            if not is_stdlib(path.normcase(co_filename)):
+                debug_output.write('Standard library module invoked user code during import; breakpoints disabled for invoked code.\n')
+            return self.prev_trace_func
+
+        if co_name == '<module>' and co_filename not in ['<string>', '<stdin>']:
+            probe_stack()
+
+            module = Module(get_code_filename(f_code))
+            MODULES.append((co_filename, module))
+            if not DETACHED:
+                report_module_load(module)
+
+            # If this is top-level code in some stdlib module, then mark this as start of stdlib import,
+            # and stop local tracing. Tracing will be re-enabled on the next local trace callback:
+            # either line, return, or exception - after we return from this call.
+            if is_stdlib(path.normcase(co_filename)):
+                self.is_importing_stdlib = True
+                return self.prev_trace_func
+
+            if not DETACHED:
+                # see if this module causes new break points to be bound
+                bound = set()
+                for pending_bp in PENDING_BREAKPOINTS:
+                    if try_bind_break_point(co_filename, module, pending_bp):
+                        bound.add(pending_bp)
+                PENDING_BREAKPOINTS.difference_update(bound)
+
         self.push_frame(frame)
 
         if DJANGO_BREAKPOINTS:
@@ -920,21 +982,8 @@ class Thread(object):
                     self.stepping = STEPPING_OVER
                     self.block_maybe_attach()
 
-        if frame.f_code.co_name == '<module>' and frame.f_code.co_filename not in ['<string>', '<stdin>']:
-            probe_stack()
-            code, module = new_module(frame)
-            if not DETACHED:
-                report_module_load(module)
-
-                # see if this module causes new break points to be bound
-                bound = set()
-                for pending_bp in PENDING_BREAKPOINTS:
-                    if try_bind_break_point(code.co_filename, module, pending_bp):
-                        bound.add(pending_bp)
-                PENDING_BREAKPOINTS.difference_update(bound)
-
         stepping = self.stepping
-        if stepping is not STEPPING_NONE and should_debug_code(frame.f_code):
+        if stepping is not STEPPING_NONE and should_debug_code(f_code):
             if stepping == STEPPING_INTO:
                 # block when we hit the 1st line, not when we're on the function def
                 self.stepping = STEPPING_OVER
@@ -947,9 +996,9 @@ class Thread(object):
                 self.stepping -= 1
 
         if (sys.platform == 'cli' and 
-            frame.f_code.co_name == '<module>' and 
-            not IPY_SEEN_MODULES.TryGetValue(frame.f_code)[0]):
-            IPY_SEEN_MODULES.Add(frame.f_code, None)
+            co_name == '<module>' and 
+            not IPY_SEEN_MODULES.TryGetValue(f_code)[0]):
+            IPY_SEEN_MODULES.Add(f_code, None)
             # work around IronPython bug - http://ironpython.codeplex.com/workitem/30127
             self.handle_line(frame, arg)
 
@@ -959,9 +1008,9 @@ class Thread(object):
             self.trace_func_stack.append(old_trace_func)
             self.prev_trace_func = None  # clear first incase old_trace_func stack overflows
             self.prev_trace_func = old_trace_func(frame, 'call', arg)
-
-        return self.trace_func
         
+        return self.trace_func
+
     def should_block_on_frame(self, frame):
         if not should_debug_code(frame.f_code):
             return False
@@ -987,6 +1036,8 @@ class Thread(object):
         return True
 
     def handle_line(self, frame, arg):
+        self.is_importing_stdlib = False
+
         if not DETACHED:
             # resolve whether step_complete and/or handling_breakpoints
             step_complete = False
@@ -1084,6 +1135,7 @@ class Thread(object):
         return self.trace_func
     
     def handle_return(self, frame, arg):
+        self.is_importing_stdlib = False
         self.pop_frame()
 
         if not DETACHED:
@@ -1121,6 +1173,8 @@ class Thread(object):
             self.prev_trace_func = self.trace_func_stack.pop()
         
     def handle_exception(self, frame, arg):
+        self.is_importing_stdlib = False
+
         if self.stepping == STEPPING_ATTACH_BREAK:
             self.block_maybe_attach()
 
@@ -1242,28 +1296,28 @@ class Thread(object):
         self.unblock_work = work
         self.unblock()
 
-    def run_on_thread(self, text, cur_frame, execution_id, frame_kind, repr_kind = PYTHON_EVALUATION_RESULT_REPR_KIND_NORMAL):
+    def run_on_thread(self, text, cur_frame, execution_id, frame_kind, print_result, repr_kind = PYTHON_EVALUATION_RESULT_REPR_KIND_NORMAL):
         self._block_starting_lock.acquire()
         
         if not self._is_blocked:
             report_execution_error('<expression cannot be evaluated at this time>', execution_id)
         elif not self._is_working:
-            self.schedule_work(lambda : self.run_locally(text, cur_frame, execution_id, frame_kind, repr_kind))
+            self.schedule_work(lambda : self.run_locally(text, cur_frame, execution_id, frame_kind, print_result, repr_kind))
         else:
             report_execution_error('<error: previous evaluation has not completed>', execution_id)
-        
+
         self._block_starting_lock.release()
 
     def run_on_thread_no_report(self, text, cur_frame, frame_kind):
         self._block_starting_lock.acquire()
-        
+
         if not self._is_blocked:
             pass
         elif not self._is_working:
             self.schedule_work(lambda : self.run_locally_no_report(text, cur_frame, frame_kind))
         else:
             pass
-        
+
         self._block_starting_lock.release()
 
     def enum_child_on_thread(self, text, cur_frame, execution_id, frame_kind):
@@ -1297,28 +1351,26 @@ class Thread(object):
         except:
             pass
 
-    def compile(self, text, cur_frame):
+    def run_locally(self, text, cur_frame, execution_id, frame_kind, print_result, repr_kind = PYTHON_EVALUATION_RESULT_REPR_KIND_NORMAL):
         try:
-            code = compile(text, '<debug input>', 'eval')
-        except:
-            code = compile(text, '<debug input>', 'exec')
-        return code
-
-    def run_locally(self, text, cur_frame, execution_id, frame_kind, repr_kind = PYTHON_EVALUATION_RESULT_REPR_KIND_NORMAL):
-        try:
-            code = self.compile(text, cur_frame)
+            code = compile_eval_or_exec(text)
             res = eval(code, cur_frame.f_globals, self.get_locals(cur_frame, frame_kind))
             self.locals_to_fast(cur_frame)
             # Report any updated variable values first
             self.enum_thread_frames_locally()
+            if print_result:
+                sys.displayhook(res)
             report_execution_result(execution_id, res, repr_kind)
         except:
             # Report any updated variable values first
             self.enum_thread_frames_locally()
+            if print_result:
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                _vspr.print_exception_frames(exc_type, exc_value, exc_tb)
             report_execution_exception(execution_id, sys.exc_info())
 
     def run_locally_no_report(self, text, cur_frame, frame_kind):
-        code = self.compile(text, cur_frame)
+        code = compile_eval_or_exec(text)
         res = eval(code, cur_frame.f_globals, self.get_locals(cur_frame, frame_kind))
         self.locals_to_fast(cur_frame)
         sys.displayhook(res)
@@ -1627,7 +1679,7 @@ class DebuggerLoop(_vsipc.SocketIO, _vsipc.IpcChannel):
         super(DebuggerLoop, self).__init__(socket=socket)
         
         DebuggerLoop.instance = self
-        self.repl_backend = None
+        self._cur_repl_modules = set()
 
     def loop(self):
         try:
@@ -1790,32 +1842,6 @@ class DebuggerLoop(_vsipc.SocketIO, _vsipc.IpcChannel):
             if bp_info is not None:
                 bp_info.remove_breakpoint(lineno)
 
-    def on_legacyConnectRepl(self, request, args):
-        port_num = args['portNum']
-
-        self.send_debug_response(request)
-
-        _start_new_thread(self.connect_to_repl_backend, (port_num,))
-
-    def connect_to_repl_backend(self, port_num):
-        DONT_DEBUG.append(path.normcase(_vspr.__file__))
-        self.repl_backend = _vspr.DebugReplBackend(self)
-        self.repl_backend.connect_from_debugger(port_num)
-        self.repl_backend.execution_loop()
-
-    def connect_to_repl_backend_using_socket(self, sock):
-        DONT_DEBUG.append(path.normcase(_vspr.__file__))
-        self.repl_backend = _vspr.DebugReplBackend(self)
-        self.repl_backend.connect_from_debugger_using_socket(sock)
-        self.repl_backend.execution_loop()
-
-    def on_legacyDisconnectRepl(self, request, args):
-        self.send_debug_response(request)
-
-        if self.repl_backend is not None:
-            self.repl_backend.disconnect_from_debugger()
-            self.repl_backend = None
-
     def on_legacyBreakAll(self, request, args):
         self.send_debug_response(request)
 
@@ -1954,12 +1980,43 @@ class DebuggerLoop(_vsipc.SocketIO, _vsipc.IpcChannel):
         eid = args['executionId']
         frame_kind = args['frameKind']
         repr_kind = args['reprKind']
+        module_name = args['moduleName']
+        print_result = args['printResult']
 
         self.send_debug_response(request)
 
-        thread, cur_frame = self.get_thread_and_frame(tid, fid, frame_kind)
-        if thread is not None and cur_frame is not None:
-            thread.run_on_thread(text, cur_frame, eid, frame_kind, repr_kind)
+        if module_name:
+            self.execute_code_in_module(text, module_name, eid, print_result, repr_kind)
+        else:
+            thread, cur_frame = self.get_thread_and_frame(tid, fid, frame_kind)
+            if thread is not None and cur_frame is not None:
+                thread.run_on_thread(text, cur_frame, eid, frame_kind, print_result, repr_kind)
+
+        # keep track of the module set so the debug REPL can update its available scopes
+        new_modules = _vspr.get_cur_module_set()
+        try:
+            if new_modules != self._cur_repl_modules:
+                self.send_debug_event(name='legacyModulesChanged')
+        except:
+            pass
+        self._cur_repl_modules = new_modules
+
+    def execute_code_in_module(self, text, module_name, execution_id, print_result, repr_kind):
+        try:
+            mod = sys.modules.get(module_name)
+            if mod is not None:
+                code = compile_eval_or_exec(text)
+                res = eval(code, mod.__dict__, mod.__dict__)
+                if print_result:
+                    sys.displayhook(res)
+                report_execution_result(execution_id, res, repr_kind)
+            else:
+                stderr.write("Unknown module '{0}'\n".format(module_name))
+                report_execution_exception(execution_id, sys.exc_info())
+        except:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            _vspr.print_exception_frames(exc_type, exc_value, exc_tb)
+            report_execution_exception(execution_id, sys.exc_info())
 
     def execute_code_no_report(self, text, tid, fid, frame_kind):
         # execute given text in specified frame, without sending back the results
@@ -2018,6 +2075,18 @@ class DebuggerLoop(_vsipc.SocketIO, _vsipc.IpcChannel):
     def on_legacyLastAck(self, request, args):
         self.send_debug_response(request)
         last_ack_event.set()
+
+    def on_legacyListReplModules(self, request, args):
+        try:
+            res = _vspr.get_module_names()
+            res.sort()
+        except:
+            res = []
+
+        self.send_debug_response(
+            request,
+            modules=[dict(name=m[0], fileName=m[1]) for m in res]
+        )
 
     def send_debug_event(self, name, **args):
         with _SendLockCtx:
@@ -2081,7 +2150,7 @@ def report_exception(frame, exc_info, tid, break_type):
         'typename': get_exception_name(exc_type),
         'message': str(exc_value),
     }
-    if break_type == 1:
+    if break_type == BREAK_TYPE_UNHANDLED:
         data['breaktype'] = 'unhandled'
     if tb_value:
         try:
@@ -2105,12 +2174,6 @@ def report_exception(frame, exc_info, tid, break_type):
         threadId=tid,
         data=dict((k, str(v)) for k, v in data.items()),
     )
-
-def new_module(frame):
-    mod = Module(get_code_filename(frame.f_code))
-    MODULES.append((frame.f_code.co_filename, mod))
-
-    return frame.f_code, mod
 
 def report_module_load(mod):
     send_debug_event(
@@ -2221,6 +2284,13 @@ def report_children(execution_id, children):
 def get_code_filename(code):
     return path.abspath(code.co_filename)
 
+def compile_eval_or_exec(text):
+    try:
+        code = compile(text, '<debug input>', 'eval')
+    except:
+        code = compile(text, '<debug input>', 'exec')
+    return code
+
 NONEXPANDABLE_TYPES = [int, str, bool, float, object, type(None), unicode]
 try:
     NONEXPANDABLE_TYPES.append(long)
@@ -2277,15 +2347,18 @@ def start_debugger_loop(sock):
 
 def attach_process(port_num, debug_id, debug_options, report = False, block = False):
     for i in xrange(50):
+        failure_cause = ''
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(('127.0.0.1', port_num))
             break
-        except:
+        except Exception:
+            import traceback
+            failure_cause = traceback.format_exc()
             import time
             time.sleep(50./1000)
     else:
-        raise Exception('failed to attach')
+        raise Exception('Attach failed:\n\n' + failure_cause)
 
     start_debugger_loop(sock)
 
@@ -2368,6 +2441,8 @@ def attach_connected_process(debug_options, report = False, block = False):
 
     if 'RedirectOutput' in debug_options:
         enable_output_redirection()
+
+    send_debug_event(name='legacyModulesChanged')
 
 # Try to detach cooperatively, notifying the debugger as we do so.
 def detach_process_and_notify_debugger():
@@ -2461,18 +2536,16 @@ def do_wait():
         msvcrt.getch()
 
 def enable_output_redirection():
-    sys.stdout = _DebuggerOutput(sys.stdout, is_stdout = True)
-    sys.stderr = _DebuggerOutput(sys.stderr, is_stdout = False)
-
-def connect_repl_using_socket(sock):
-    _start_new_thread(DebuggerLoop.instance.connect_to_repl_backend_using_socket, (sock,))
+    sys.stdout = _DebuggerOutput(sys.stdout, 'stdout')
+    sys.stderr = _DebuggerOutput(sys.stderr, 'stderr')
 
 class _DebuggerOutput(object):
-    """file like object which redirects output to the repl window."""
+    """file like object which redirects output to the debugger."""
     errors = 'strict'
 
-    def __init__(self, old_out, is_stdout):
-        self.is_stdout = is_stdout
+    # Channel is one of: 'debug', 'stdout', 'stderr'
+    def __init__(self, old_out, channel):
+        self.channel = channel
         self.old_out = old_out
         if sys.version >= '3.' and hasattr(old_out, 'buffer'):
             self.buffer = DebuggerBuffer(old_out.buffer)
@@ -2496,6 +2569,7 @@ class _DebuggerOutput(object):
                 name='legacyDebuggerOutput',
                 threadId=thread.get_ident(),
                 output=value,
+                channel=self.channel,
             )
         if self.old_out:
             self.old_out.write(value)
@@ -2508,10 +2582,7 @@ class _DebuggerOutput(object):
     
     @property
     def name(self):
-        if self.is_stdout:
-            return "<stdout>"
-        else:
-            return "<stderr>"
+        return '<' + channel + '>'
 
     def __getattr__(self, name):
         return getattr(self.old_out, name)
@@ -2542,6 +2613,8 @@ class DebuggerBuffer(object):
 
     def seek(self, pos, whence = 0):
         return self.buffer.seek(pos, whence)
+
+debug_output = _DebuggerOutput(None, 'debug')
 
 def is_same_py_file(file1, file2):
     """compares 2 filenames accounting for .pyc files"""
@@ -2576,11 +2649,6 @@ def parse_debug_options(s):
     return set([opt.strip() for opt in s.split(',')])
 
 def debug(file, port_num, debug_id, debug_options, run_as = 'script'):
-    # remove us from modules so there's no trace of us
-    sys.modules['$visualstudio_py_debugger'] = sys.modules['visualstudio_py_debugger']
-    __name__ = '$visualstudio_py_debugger'
-    del sys.modules['visualstudio_py_debugger']
-
     wait_on_normal_exit = 'WaitOnNormalExit' in debug_options
 
     attach_process(port_num, debug_id, debug_options, report = True)

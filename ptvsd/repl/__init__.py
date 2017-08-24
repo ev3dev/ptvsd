@@ -17,7 +17,7 @@
 from __future__ import with_statement
 
 __author__ = "Microsoft Corporation <ptvshelp@microsoft.com>"
-__version__ = "3.1.0.0"
+__version__ = "3.2.1.0"
 
 # This module MUST NOT import threading in global scope. This is because in a direct (non-ptvsd)
 # attach scenario, it is loaded on the injected debugger attach thread, and if threading module
@@ -46,16 +46,8 @@ import os
 import inspect
 import types
 from collections import deque
+import ptvsd.util as _vspu
 
-try:
-    # In the local attach scenario, visualstudio_py_util is injected into globals()
-    # by PyDebugAttach before loading this module, and cannot be imported.
-    _vspu = visualstudio_py_util
-except:
-    try:
-        import visualstudio_py_util as _vspu
-    except ImportError:
-        import ptvsd.visualstudio_py_util as _vspu
 to_bytes = _vspu.to_bytes
 read_bytes = _vspu.read_bytes
 read_int = _vspu.read_int
@@ -350,13 +342,6 @@ actual inspection and introspection."""
         args = read_string(self.conn)
         self.execute_file_ex(filetype, filename, args)
 
-    def _cmd_debug_attach(self):
-        import visualstudio_py_debugger
-        port = read_int(self.conn)
-        id = read_string(self.conn)
-        debug_options = visualstudio_py_debugger.parse_debug_options(read_string(self.conn))
-        self.attach_process(port, id, debug_options)
-
     _COMMANDS = {
         to_bytes('run '): _cmd_run,
         to_bytes('abrt'): _cmd_abrt,
@@ -369,7 +354,6 @@ actual inspection and introspection."""
         to_bytes('inpl'): _cmd_inpl,
         to_bytes('excf'): _cmd_excf,
         to_bytes('excx'): _cmd_excx,
-        to_bytes('dbga'): _cmd_debug_attach,
     }
 
     def _write_member_dict(self, mem_dict):
@@ -378,18 +362,14 @@ actual inspection and introspection."""
             write_string(self.conn, name)
             write_string(self.conn, type_name)
 
-    def on_debugger_detach(self):
-        with self.send_lock:
-            write_bytes(self.conn, ReplBackend._DETC)
-
     def init_debugger(self):
         from os import path
         sys.path.append(path.dirname(__file__))
-        import visualstudio_py_debugger
-        visualstudio_py_debugger.DONT_DEBUG.append(path.normcase(__file__))
-        new_thread = visualstudio_py_debugger.new_thread()
+        import ptvsd.debugger
+        ptvsd.debugger.DONT_DEBUG.append(path.normcase(__file__))
+        new_thread = ptvsd.debugger.new_thread()
         sys.settrace(new_thread.trace_func)
-        visualstudio_py_debugger.intercept_threads(True)
+        ptvsd.debugger.intercept_threads(True)
 
     def send_image(self, filename):
         with self.send_lock:
@@ -510,10 +490,6 @@ actual inspection and introspection."""
         """flushes the stdout/stderr buffers"""
         raise NotImplementedError
 
-    def attach_process(self, port, debugger_id, debug_options):
-        """starts processing execution requests"""
-        raise NotImplementedError
-
 def exit_work_item():
     sys.exit(0)
 
@@ -559,7 +535,11 @@ class BasicReplBackend(ReplBackend):
                 self.exec_mod = Scope()
                 self.exec_mod.__name__ = '__main__'
             else:
-                sys.modules[mod_name] = self.exec_mod = imp.new_module(mod_name)
+                self.exec_mod = imp.new_module(mod_name)
+                # On 2.6, the below messes up the globals of the calling script
+                # if it is in sys.modules of the same name.
+                if sys.version_info >= (2, 7):
+                    sys.modules[mod_name] = self.exec_mod
         else:
             self.exec_mod = sys.modules['__main__']
 
@@ -646,7 +626,7 @@ due to the exec, so we do it here"""
         # Otherwise we have a nested exception hanging around and the 2nd abort doesn't
         # work (that's probably an IronPython bug)
         try:    
-            new_modules = self._get_cur_module_set()
+            new_modules = get_cur_module_set()
             try:
                 if new_modules != cur_modules:
                     self.send_modules_changed()
@@ -707,11 +687,9 @@ due to the exec, so we do it here"""
                     sys.stderr.write('KeyboardInterrupt')
                 else:
                     # let IronPython format the exception so users can do -X:ExceptionDetail or -X:ShowClrExceptions
-                    exc_next = self.skip_internal_frames(exc_tb)
-                    sys.stderr.write(''.join(traceback.format_exception(exc_type, exc_value, exc_next)))
+                    print_exception_frames(exc_type, exc_value, exc_tb)
             else:
-                exc_next = self.skip_internal_frames(exc_tb)
-                sys.stderr.write(''.join(traceback.format_exception(exc_type, exc_value, exc_next)))
+                print_exception_frames(exc_type, exc_value, exc_tb)
 
             try:
                 self.send_error()
@@ -720,19 +698,6 @@ due to the exec, so we do it here"""
                 return True, None, None, None
 
         return False, cur_modules, cur_ps1, cur_ps2
-
-    def skip_internal_frames(self, tb):
-        """return the first frame outside of the repl/debugger code"""
-        while tb is not None and self.is_internal_frame(tb):
-            tb = tb.tb_next
-        return tb
-
-    def is_internal_frame(self, tb):
-        """return true if the frame is from internal code (repl or debugger)"""
-        f = tb.tb_frame
-        co = f.f_code
-        filename = co.co_filename
-        return filename.endswith('visualstudio_py_repl.py') or filename.endswith('visualstudio_py_debugger.py')
 
     def execution_loop(self):
         """loop on the main thread which is responsible for executing code"""
@@ -794,23 +759,6 @@ due to the exec, so we do it here"""
                 print(out_codec.decode(line, 'replace')[0].rstrip('\r\n'))
         except Exception:
             traceback.print_exc()
-
-    @staticmethod
-    def _get_cur_module_set():
-        """gets the set of modules avoiding exceptions if someone puts something
-        weird in there"""
-
-        try:
-            return set(sys.modules)
-        except:
-            res = set()
-            for name in sys.modules:
-                try:
-                    res.add(name)
-                except:
-                    pass
-            return res
-
 
     def run_command(self, command):
         self.current_code = command
@@ -972,51 +920,10 @@ due to the exec, so we do it here"""
             _debug_write('Unknown module ' + module)
 
     def get_module_names(self):
-        res = []
-        for name, module in sys.modules.items():
-            try:
-                if name != 'visualstudio_py_repl' and name != '$visualstudio_py_debugger':
-                    if sys.platform == 'cli' and type(module) is NamespaceType:
-                        self.get_namespaces(name, module, res)
-                    else:
-                        try:
-                            filename = os.path.abspath(module.__file__)
-                        except Exception:
-                            filename = None
-                        res.append((name, filename))
-
-            except:
-                pass
-        return res
-
-    def get_namespaces(self, basename, namespace, names):
-        names.append((basename, ''))
-        try:
-            for name in dir(namespace):
-                new_name = basename + '.' + name
-                new_namespace = getattr(namespace, name)
-
-                if type(new_namespace) is NamespaceType:
-                    self.get_namespaces(new_name, new_namespace, names)
-        except:
-            pass
+        return get_module_names()
 
     def flush(self):
         sys.stdout.flush()
-
-    def do_detach(self):
-        import visualstudio_py_debugger
-        visualstudio_py_debugger.DETACH_CALLBACKS.remove(self.do_detach)
-        self.on_debugger_detach()
-
-    def attach_process(self, port, debugger_id, debug_options):
-        def execute_attach_process_work_item():
-            import visualstudio_py_debugger
-            visualstudio_py_debugger.DETACH_CALLBACKS.append(self.do_detach)
-            visualstudio_py_debugger.attach_process(port, debugger_id, debug_options, report=True, block=True)
-
-        self.execute_item = execute_attach_process_work_item
-        self.execute_item_lock.release()
 
     @staticmethod
     def get_type_name(val):
@@ -1045,6 +952,73 @@ due to the exec, so we do it here"""
                 except:
                     pass
             return
+
+def get_cur_module_set():
+    """gets the set of modules avoiding exceptions if someone puts something
+    weird in there"""
+
+    try:
+        return set(sys.modules)
+    except:
+        res = set()
+        for name in sys.modules:
+            try:
+                res.add(name)
+            except:
+                pass
+        return res
+
+def get_module_names():
+    res = []
+    for name, module in sys.modules.items():
+        try:
+            if name != 'ptvsd' and not name.startswith('ptvsd.'):
+                if sys.platform == 'cli' and type(module) is NamespaceType:
+                    get_namespaces(name, module, res)
+                else:
+                    try:
+                        filename = os.path.abspath(module.__file__)
+                    except Exception:
+                        filename = None
+                    res.append((name, filename))
+
+        except:
+            pass
+    return res
+
+def get_namespaces(basename, namespace, names):
+    names.append((basename, ''))
+    try:
+        for name in dir(namespace):
+            new_name = basename + '.' + name
+            new_namespace = getattr(namespace, name)
+
+            if type(new_namespace) is NamespaceType:
+                get_namespaces(new_name, new_namespace, names)
+    except:
+        pass
+
+def print_exception_frames(exc_type, exc_value, exc_tb):
+    exc_next = skip_internal_frames(exc_tb)
+    sys.stderr.write(''.join(traceback.format_exception(exc_type, exc_value, exc_next)))
+
+def skip_internal_frames(tb):
+    """return the first frame outside of the repl/debugger code"""
+    while tb is not None and is_internal_frame(tb):
+        tb = tb.tb_next
+    return tb
+
+def is_internal_frame(tb):
+    """return true if the frame is from internal code (repl or debugger)"""
+    f = tb.tb_frame
+    co = f.f_code
+    filename = co.co_filename
+    return '/ptvsd/' in filename or '\\ptvsd\\' in filename
+
+'''
+This code is no longer used.
+Kept as a reference for now until the members and signatures functionality is
+ported over to the debugger.
 
 class DebugReplBackend(BasicReplBackend):
     def __init__(self, debugger):
@@ -1177,6 +1151,7 @@ class DebugReplBackend(BasicReplBackend):
 
     def check_for_exit_execution_loop(self):
         return self.disconnect_requested
+'''
 
 class _ReplOutput(object):
     """file like object which redirects output to the repl window."""
@@ -1317,75 +1292,5 @@ if sys.platform == 'cli':
         def Encoding(self):
             return System.Text.Encoding.UTF8
 
-
 BACKEND = None
 
-def _run_repl():
-    from optparse import OptionParser
-
-    parser = OptionParser(prog='repl', description='Process REPL options')
-    parser.add_option('--port', dest='port',
-                      help='the port to connect back to')
-    parser.add_option('--execution-mode', dest='backend',
-                      help='the backend to use')
-    parser.add_option('--enable-attach', dest='enable_attach', 
-                      action="store_true", default=False,
-                      help='enable attaching the debugger via $attach')
-
-    (options, args) = parser.parse_args()
-
-    # kick off repl
-    # make us available under our "normal" name, not just __main__ which we'll likely replace.
-    sys.modules['visualstudio_py_repl'] = sys.modules['__main__']
-    global __name__
-    __name__ = 'visualstudio_py_repl'
-
-    backend_type = BasicReplBackend
-    backend_error = None
-    if options.backend is not None and options.backend.lower() != 'standard':
-        try:
-            split_backend = options.backend.split('.')
-            backend_mod_name = '.'.join(split_backend[:-1])
-            backend_name = split_backend[-1]
-            backend_type = getattr(__import__(backend_mod_name), backend_name)
-        except UnsupportedReplException:
-            backend_error = sys.exc_info()[1].reason
-        except:
-            backend_error = traceback.format_exc()
-
-    # fix sys.path so that cwd is where the project lives.
-    sys.path[0] = '.'
-    # remove all of our parsed args in case we have a launch file that cares...
-    sys.argv = args or ['']
-
-    global BACKEND
-    try:
-        BACKEND = backend_type()
-    except UnsupportedReplException:
-        backend_error = sys.exc_info()[1].reason
-        BACKEND = BasicReplBackend()
-    except Exception:
-        backend_error = traceback.format_exc()
-        BACKEND = BasicReplBackend()
-    BACKEND.connect(int(options.port))
-
-    if options.enable_attach:
-        BACKEND.init_debugger()
-
-    if backend_error is not None:
-        sys.stderr.write('Error using selected REPL back-end:\n')
-        sys.stderr.write(backend_error + '\n')
-        sys.stderr.write('Using standard backend instead\n')
-
-    # execute code on the main thread which we can interrupt
-    BACKEND.execution_loop()    
-
-if __name__ == '__main__':
-    try:
-        _run_repl()
-    except:
-        if DEBUG:
-            _debug_write(traceback.format_exc())
-            _debug_write('exiting')
-            input()
-        raise
