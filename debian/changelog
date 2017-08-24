@@ -1,3 +1,9 @@
+ptvsd (3.2.1-1ev3dev1) testing; urgency=medium
+
+  * Imported Upstream version 3.2.1
+
+ -- David Lechner <david@lechnology.com>  Thu, 24 Aug 2017 09:40:39 -0500
+
 ptvsd (3.1.0~rc1-1ev3dev1) testing; urgency=medium
 
   * Imported Upstream version 3.1.0~rc1
