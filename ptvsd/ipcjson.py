@@ -1,61 +1,75 @@
-﻿# Python Tools for Visual Studio
-# Copyright(c) Microsoft Corporation
-# All rights reserved.
-# 
-# Licensed under the Apache License, Version 2.0 (the License); you may not use
-# this file except in compliance with the License. You may obtain a copy of the
-# License at http://www.apache.org/licenses/LICENSE-2.0
-# 
-# THIS CODE IS PROVIDED ON AN  *AS IS* BASIS, WITHOUT WARRANTIES OR CONDITIONS
-# OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY
-# IMPLIED WARRANTIES OR CONDITIONS OF TITLE, FITNESS FOR A PARTICULAR PURPOSE,
-# MERCHANTABLITY OR NON-INFRINGEMENT.
-# 
-# See the Apache Version 2.0 License for specific language governing
-# permissions and limitations under the License.
+﻿# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
 
-from __future__ import with_statement, absolute_import
+from __future__ import print_function, with_statement, absolute_import
 
-__author__ = "Microsoft Corporation <ptvshelp@microsoft.com>"
-__version__ = "3.2.1.0"
+# This module MUST NOT import threading in global scope. This is because
+# in a direct (non-ptvsd) attach scenario, it is loaded on the injected
+# debugger attach thread, and if threading module hasn't been loaded
+# already, it will assume that the thread on which it is being loaded is
+# the main thread. This will cause issues when the thread goes away
+# after attach completes.
 
-# This module MUST NOT import threading in global scope. This is because in a direct (non-ptvsd)
-# attach scenario, it is loaded on the injected debugger attach thread, and if threading module
-# hasn't been loaded already, it will assume that the thread on which it is being loaded is the
-# main thread. This will cause issues when the thread goes away after attach completes.
-
+import errno
+import itertools
 import json
 import os.path
-import itertools
 import socket
 import sys
 import traceback
-from ptvsd.util import to_bytes
+
 
 _TRACE = None
 
-def _str_or_call(m):
-    try:
-        callable = m.__call__
-    except AttributeError:
-        return str(m)
-    else:
-        return str(callable())
+SKIP_TB_PREFIXES = [
+    os.path.normcase(
+        os.path.dirname(
+            os.path.abspath(__file__))),
+]
+
+
+if sys.version_info[0] >= 3:
+    from encodings import ascii
+
+    def to_bytes(cmd_str):
+        return ascii.Codec.encode(cmd_str)[0]
+else:
+    def to_bytes(cmd_str):
+        return cmd_str
+
+    class BrokenPipeError(Exception):
+        pass
+
 
 def _trace(*msg):
     if _TRACE:
         _TRACE(''.join(_str_or_call(m) for m in msg) + '\n')
 
 
-SKIP_TB_PREFIXES = [
-    os.path.normcase(os.path.dirname(os.path.abspath(__file__)))
-]
+def _str_or_call(m):
+    # TODO: Use callable() here.
+    try:
+        call = m.__call__
+    except AttributeError:
+        return str(m)
+    else:
+        return str(call())
 
-class InvalidHeaderError(Exception): pass
 
-class InvalidContentError(Exception): pass
+class InvalidHeaderError(Exception):
+    # TODO: docstring
+    pass
+
+
+class InvalidContentError(Exception):
+    # TODO: docstring
+    pass
+
 
 class SocketIO(object):
+    # TODO: docstring
+
     def __init__(self, *args, **kwargs):
         super(SocketIO, self).__init__(*args, **kwargs)
         self.__buffer = to_bytes('')
@@ -64,26 +78,40 @@ class SocketIO(object):
         self.__own_socket = kwargs.get('own_socket', True)
         self.__logfile = kwargs.get('logfile')
         if self.__socket is None and self.__port is None:
-            raise ValueError("A 'port' or a 'socket' must be passed to SocketIO initializer as a keyword argument.")
+            raise ValueError(
+                    "A 'port' or a 'socket' must be passed to SocketIO initializer as a keyword argument.")  # noqa
         if self.__socket is None:
-             self.__socket = socket.create_connection(('127.0.0.1', self.__port))
+            self.__socket = socket.create_connection(
+                    ('127.0.0.1', self.__port))
 
     def _send(self, **payload):
+        # TODO: docstring
         content = json.dumps(payload).encode('utf-8')
-        headers = ('Content-Length: %d\r\n\r\n' % (len(content), )).encode('ascii')
+        headers = ('Content-Length: {}\r\n\r\n'.format(len(content))
+                   ).encode('ascii')
+        # TODO: We never actually use a logfile...
         if self.__logfile is not None:
             self.__logfile.write(content)
             self.__logfile.write('\n'.encode('utf-8'))
             self.__logfile.flush()
-        self.__socket.send(headers)
-        self.__socket.send(content)
+        try:
+            self.__socket.send(headers)
+            self.__socket.send(content)
+        except BrokenPipeError:
+            pass
+        except OSError as exc:
+            if exc.errno in (errno.EPIPE, errno.ESHUTDOWN):  # BrokenPipeError
+                pass
+            elif exc.errno not in (errno.ENOTCONN, errno.EBADF):
+                raise
 
     def _buffered_read_line_as_ascii(self):
-        '''
+        """Return the next line from the buffer as a string.
+
         Reads bytes until it encounters newline chars, and returns the bytes
         ascii decoded, newline chars are excluded from the return value.
         Blocks until: newline chars are read OR socket is closed.
-        '''
+        """
         newline = '\r\n'.encode('ascii')
         while newline not in self.__buffer:
             temp = self.__socket.recv(1024)
@@ -104,6 +132,7 @@ class SocketIO(object):
         return line.decode('ascii', 'replace')
 
     def _buffered_read_as_utf8(self, length):
+        # TODO: docstring
         while len(self.__buffer) < length:
             temp = self.__socket.recv(1024)
             if not temp:
@@ -111,14 +140,18 @@ class SocketIO(object):
             self.__buffer += temp
 
         if len(self.__buffer) < length:
-            raise InvalidContentError('Expected to read {0} bytes of content, but only read {1} bytes.'.format(length, len(self.__buffer)))
+            raise InvalidContentError(
+                    'Expected to read {} bytes of content, but only read {} bytes.'.format(length, len(self.__buffer)))  # noqa
 
         content = self.__buffer[:length]
         self.__buffer = self.__buffer[length:]
         return content.decode('utf-8', 'replace')
 
     def _wait_for_message(self):
-        # base protocol defined at https://github.com/Microsoft/language-server-protocol/blob/master/protocol.md#base-protocol
+        # TODO: docstring
+        # base protocol defined at:
+        #  https://github.com/Microsoft/language-server-protocol/blob/master/protocol.md#base-protocol
+
         # read all headers, ascii encoded separated by '\r\n'
         # end of headers is indicated by an empty line
         headers = {}
@@ -128,7 +161,8 @@ class SocketIO(object):
             if len(parts) == 2:
                 headers[parts[0]] = parts[1]
             else:
-                raise InvalidHeaderError("Malformed header, expected 'name: value'\n{0}".format(line))
+                raise InvalidHeaderError(
+                    "Malformed header, expected 'name: value'\n" + line)
             line = self._buffered_read_line_as_ascii()
 
         # end of stream
@@ -141,14 +175,15 @@ class SocketIO(object):
             try:
                 length = int(length_text)
             except ValueError:
-                raise InvalidHeaderError("Invalid Content-Length: {0}".format(length_text))
+                raise InvalidHeaderError(
+                        'Invalid Content-Length: ' + length_text)
         except NameError:
             raise InvalidHeaderError('Content-Length not specified in headers')
         except KeyError:
             raise InvalidHeaderError('Content-Length not specified in headers')
 
         if length < 0 or length > 2147483647:
-            raise InvalidHeaderError("Invalid Content-Length: {0}".format(length))
+            raise InvalidHeaderError('Invalid Content-Length: ' + length_text)
 
         # read content, utf-8 encoded
         content = self._buffered_read_as_utf8(length)
@@ -161,11 +196,15 @@ class SocketIO(object):
             raise InvalidContentError('Error deserializing message content.')
 
     def _close(self):
+        # TODO: docstring
         if self.__own_socket:
             self.__socket.close()
 
+
 '''
 class StandardIO(object):
+    # TODO: docstring
+
     def __init__(self, stdin, stdout, *args, **kwargs):
         super(StandardIO, self).__init__(*args, **kwargs)
         try:
@@ -181,40 +220,47 @@ class StandardIO(object):
         self.__stdout.flush()
 
     def _wait_for_message(self):
-        msg = json.loads(self.__stdin.readline().decode('utf-8', 'replace').rstrip())
+        msg = json.loads(
+            self.__stdin.readline().decode('utf-8', 'replace').rstrip())
         self._receive_message(msg)
 
     def _close(self):
         pass
 '''
 
+
 class IpcChannel(object):
+    # TODO: docstring
+
     def __init__(self, *args, **kwargs):
         # This class is meant to be last in the list of base classes
         # Don't call super because object's __init__ doesn't take arguments
         try:
             import thread
-        except:
+        except ImportError:
             import _thread as thread
+        # TODO: switch to a single underscore for "private" variables.
         self.__seq = itertools.count()
         self.__exit = False
         self.__lock = thread.allocate_lock()
         self.__message = []
-        self.__exit_on_unknown_command = True
 
     def close(self):
+        # TODO: docstring
         self._close()
 
-    def send_event(self, name, **kwargs):
+    def send_event(self, _name, **kwargs):
+        # TODO: docstring
         with self.__lock:
             self._send(
                 type='event',
                 seq=next(self.__seq),
-                event=name,
+                event=_name,
                 body=kwargs,
             )
 
     def send_response(self, request, success=True, message=None, **kwargs):
+        # TODO: docstring
         with self.__lock:
             self._send(
                 type='response',
@@ -227,18 +273,30 @@ class IpcChannel(object):
             )
 
     def set_exit(self):
+        # TODO: docstring
         self.__exit = True
 
     def process_messages(self):
+        # TODO: docstring
         while True:
             if self.process_one_message():
                 return
 
     def process_one_message(self):
+        # TODO: docstring
         try:
             msg = self.__message.pop(0)
         except IndexError:
-            self._wait_for_message()
+            try:
+                self._wait_for_message()
+            except OSError as exc:
+                if exc.errno == errno.EBADF or self.__exit:  # socket closed
+                    return self.__exit
+                raise
+            except Exception:
+                if self.__exit:
+                    return True
+                raise
             try:
                 msg = self.__message.pop(0)
             except IndexError:
@@ -265,11 +323,14 @@ class IpcChannel(object):
         return self.__exit
 
     def on_request(self, request):
-        assert request.get('type', '') == 'request', "Only handle 'request' messages in on_request"
+        # TODO: docstring
+        assert request.get('type', '') == 'request', \
+                "Only handle 'request' messages in on_request"
 
         cmd = request.get('command', '')
         args = request.get('arguments', {})
-        target = getattr(self, 'on_' + cmd, self.on_invalid_request)
+        target = getattr(self, 'on_' + cmd,
+                         self.on_invalid_request)
         try:
             _trace('Calling ', repr(target))
             target(request, args)
@@ -283,17 +344,18 @@ class IpcChannel(object):
             )
 
     def on_response(self, msg):
+        # TODO: docstring
         # this class is only used for server side only for now
         raise NotImplementedError
 
     def on_event(self, msg):
+        # TODO: docstring
         # this class is only used for server side only for now
         raise NotImplementedError
 
     def on_invalid_request(self, request, args):
+        # TODO: docstring
         self.send_response(request, success=False, message='Unknown command')
-        if self.__exit_on_unknown_command:
-            self.__exit = True
 
     def _receive_message(self, message):
         with self.__lock:
