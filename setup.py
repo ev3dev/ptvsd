@@ -1,34 +1,72 @@
 #!/usr/bin/env python
 
-#-------------------------------------------------------------------------
-# Copyright (c) Microsoft.  All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#--------------------------------------------------------------------------
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
+import os
+import os.path
+import subprocess
+import sys
 
 from setuptools import setup
 
-setup(name='ptvsd',
-      version='3.2.1',
-      description='Visual Studio remote debugging server for Python',
-      license='Apache License 2.0',
-      author='Microsoft Corporation',
-      author_email='ptvshelp@microsoft.com',
-      url='https://aka.ms/ptvs',
-      classifiers=[
-        'Development Status :: 5 - Production/Stable',
+import versioneer
+
+
+if not os.getenv('SKIP_CYTHON_BUILD'):
+    print('Compiling extension modules (set SKIP_CYTHON_BUILD=1 to omit)')
+    subprocess.call(
+        [sys.executable, 'ptvsd/pydevd/setup_cython.py', 'build_ext', '-i'])
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+# Add pydevd files as data files for this package. They are not treated
+# as a package of their own, because we don't actually want to provide
+# pydevd - just use our own copy internally.
+def get_pydevd_package_data():
+    ptvsd_prefix = os.path.join(ROOT, 'ptvsd')
+    pydevd_prefix = os.path.join(ptvsd_prefix, 'pydevd')
+    for root, dirs, files in os.walk(pydevd_prefix):
+        # From the root of pydevd repo, we want only scripts and
+        # subdirectories that constitute the package itself (not helper
+        # scripts, tests etc). But when walking down into those
+        # subdirectories, we want everything below.
+        if os.path.normcase(root) == os.path.normcase(pydevd_prefix):
+            dirs[:] = [d
+                       for d in dirs
+                       if d.startswith('pydev') or d.startswith('_pydev')]
+            files[:] = [f
+                        for f in files
+                        if f.endswith('.py') and (f in ['setup_cython.py'] or 'pydev' in f)]  # noqa
+        dirs[:] = [d for d in dirs if d != '__pycache__']
+        for f in files:
+            yield os.path.join(root[len(ptvsd_prefix) + 1:], f)
+
+
+PACKAGE_DATA = {
+    'ptvsd': list(get_pydevd_package_data()) + ['ThirdPartyNotices.txt'],
+}
+
+setup(
+    name='ptvsd',
+    version=versioneer.get_version(),
+    description='Remote debugging server for Python support in Visual Studio and Visual Studio Code', # noqa
+    #long_description=open('DESCRIPTION.md').read(),
+    #long_description_content_type='text/markdown',
+    license='MIT',
+    author='Microsoft Corporation',
+    author_email='ptvshelp@microsoft.com',
+    url='https://aka.ms/ptvs',
+    classifiers=[
+        'Development Status :: 3 - Alpha',
         'Programming Language :: Python',
         'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 3',
-        'License :: OSI Approved :: Apache Software License'],
-      packages=['ptvsd', 'ptvsd.repl']
-     )
+        'License :: OSI Approved :: MIT License',
+    ],
+    packages=['ptvsd'],
+    package_data=PACKAGE_DATA,
+    cmdclass=versioneer.get_cmdclass(),
+)

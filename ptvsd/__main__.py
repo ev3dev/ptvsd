@@ -1,57 +1,202 @@
-# Python Tools for Visual Studio
-# Copyright(c) Microsoft Corporation
-# All rights reserved.
-# 
-# Licensed under the Apache License, Version 2.0 (the License); you may not use
-# this file except in compliance with the License. You may obtain a copy of the
-# License at http://www.apache.org/licenses/LICENSE-2.0
-# 
-# THIS CODE IS PROVIDED ON AN  *AS IS* BASIS, WITHOUT WARRANTIES OR CONDITIONS
-# OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY
-# IMPLIED WARRANTIES OR CONDITIONS OF TITLE, FITNESS FOR A PARTICULAR PURPOSE,
-# MERCHANTABLITY OR NON-INFRINGEMENT.
-# 
-# See the Apache Version 2.0 License for specific language governing
-# permissions and limitations under the License.
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
 
-__author__ = "Microsoft Corporation <ptvshelp@microsoft.com>"
-__version__ = "3.2.1.0"
-
-import os
+import argparse
+import os.path
 import sys
-from optparse import OptionParser
-from ptvsd.util import exec_file
-from ptvsd.debugger import DONT_DEBUG
-from ptvsd import DEFAULT_PORT, enable_attach, wait_for_attach
 
-parser = OptionParser(prog = 'ptvsd', usage = 'Usage: %prog [<option>]... <file> [- <args>]', version = '%prog ' + __version__)
-parser.add_option('-s', '--secret', metavar = '<secret>', help = 'restrict server to only allow clients that specify <secret> when connecting')
-parser.add_option('-i', '--interface', default = '0.0.0.0', metavar = '<ip-address>', help = 'listen for debugger connections on interface <ip-address>')
-parser.add_option('-p', '--port', type='int', default = DEFAULT_PORT, metavar = '<port>', help = 'listen for debugger connections on <port>')
-parser.add_option('--certfile', metavar = '<file>', help = 'Enable SSL and use PEM certificate from <file> to secure connection')
-parser.add_option('--keyfile', metavar = '<file>', help = 'Use private key from <file> to secure connection (requires --certfile)')
-parser.add_option('--no-output-redirection', dest = 'redirect_output', action = 'store_false', default = True, help = 'do not redirect stdout and stderr to debugger')
-parser.add_option('--wait', dest = 'wait', action = 'store_true', default = False, help = 'wait for a debugger to attach before executing')
+from ptvsd._main import debug_main, run_main
+from ptvsd.socket import Address
+from ptvsd.version import __version__, __author__  # noqa
 
-argv = sys.argv[1:]
-script_argv = []
-if '-' in argv:
-    script_argv = argv[argv.index('-') + 1:]
-    del argv[argv.index('-'):]
 
-(opts, args) = parser.parse_args(argv)
-if not args and not script_argv:
-    parser.error('<file> not specified')
-if args:
-    script_argv.insert(0, args[0])
-if opts.keyfile and not opts.certfile:
-    parser.error('--keyfile requires --certfile')
+##################################
+# the script
 
-enable_attach(opts.secret, (opts.interface, opts.port), opts.certfile, opts.keyfile, opts.redirect_output)
-if opts.wait:
-    wait_for_attach()
+"""
+For the PyDevd CLI handling see:
 
-DONT_DEBUG.append(os.path.normcase(__file__))
+  https://github.com/fabioz/PyDev.Debugger/blob/master/_pydevd_bundle/pydevd_command_line_handling.py
+  https://github.com/fabioz/PyDev.Debugger/blob/master/pydevd.py#L1450  (main func)
+"""  # noqa
 
-sys.argv = script_argv
-exec_file(script_argv[0], {'__name__': '__main__'})
+PYDEVD_OPTS = {
+    '--file',
+    '--client',
+    #'--port',
+    '--vm_type',
+}
+
+PYDEVD_FLAGS = {
+    '--DEBUG',
+    '--DEBUG_RECORD_SOCKET_READS',
+    '--cmd-line',
+    '--module',
+    '--multiproc',
+    '--multiprocess',
+    '--print-in-debugger-startup',
+    '--save-signatures',
+    '--save-threading',
+    '--save-asyncio',
+    '--server',
+}
+
+USAGE = """
+  {0} [-h] [--nodebug] [--host HOST | --server-host HOST] --port PORT -m MODULE [arg ...]
+  {0} [-h] [--nodebug] [--host HOST | --server-host HOST] --port PORT FILENAME [arg ...]
+"""  # noqa
+
+
+def parse_args(argv=None):
+    """Return the parsed args to use in main()."""
+    if argv is None:
+        argv = sys.argv
+        prog = argv[0]
+        if prog == __file__:
+            prog = '{} -m ptvsd'.format(os.path.basename(sys.executable))
+    else:
+        prog = argv[0]
+    argv = argv[1:]
+
+    supported, pydevd, script = _group_args(argv)
+    args = _parse_args(prog, supported)
+    extra = pydevd
+    if script:
+        extra += script
+    return args, extra
+
+
+def _group_args(argv):
+    supported = []
+    pydevd = []
+    script = []
+
+    try:
+        pos = argv.index('--')
+    except ValueError:
+        script = []
+    else:
+        script = argv[pos + 1:]
+        argv = argv[:pos]
+
+    for arg in argv:
+        if arg == '-h' or arg == '--help':
+            return argv, [], script
+
+    gottarget = False
+    skip = 0
+    for i in range(len(argv)):
+        if skip:
+            skip -= 1
+            continue
+
+        arg = argv[i]
+        try:
+            nextarg = argv[i + 1]
+        except IndexError:
+            nextarg = None
+
+        # TODO: Deprecate the PyDevd arg support.
+        # PyDevd support
+        if gottarget:
+            script = argv[i:] + script
+            break
+        if arg == '--client':
+            arg = '--host'
+        elif arg == '--file':
+            if nextarg is None:  # The filename is missing...
+                pydevd.append(arg)
+                continue  # This will get handled later.
+            if nextarg.endswith(':') and '--module' in pydevd:
+                pydevd.remove('--module')
+                arg = '-m'
+                argv[i + 1] = nextarg = nextarg[:-1]
+            else:
+                arg = nextarg
+                skip += 1
+
+        if arg in PYDEVD_OPTS:
+            pydevd.append(arg)
+            if nextarg is not None:
+                pydevd.append(nextarg)
+            skip += 1
+        elif arg in PYDEVD_FLAGS:
+            pydevd.append(arg)
+        elif arg == '--nodebug':
+            supported.append(arg)
+
+        # ptvsd support
+        elif arg in ('--host', '--server-host', '--port', '-m'):
+            if arg == '-m':
+                gottarget = True
+            supported.append(arg)
+            if nextarg is not None:
+                supported.append(nextarg)
+            skip += 1
+        elif not arg.startswith('-'):
+            supported.append(arg)
+            gottarget = True
+
+        # unsupported arg
+        else:
+            supported.append(arg)
+            break
+
+    return supported, pydevd, script
+
+
+def _parse_args(prog, argv):
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        usage=USAGE.format(prog),
+    )
+    parser.add_argument('--nodebug', action='store_true')
+    host = parser.add_mutually_exclusive_group()
+    host.add_argument('--host')
+    host.add_argument('--server-host')
+    parser.add_argument('--port', type=int, required=True)
+
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument('-m', dest='module')
+    target.add_argument('filename', nargs='?')
+
+    args = parser.parse_args(argv)
+    ns = vars(args)
+
+    serverhost = ns.pop('server_host', None)
+    clienthost = ns.pop('host', None)
+    if serverhost:
+        args.address = Address.as_server(serverhost, ns.pop('port'))
+    elif not clienthost:
+        if args.nodebug:
+            args.address = Address.as_client(clienthost, ns.pop('port'))
+        else:
+            args.address = Address.as_server(clienthost, ns.pop('port'))
+    else:
+        args.address = Address.as_client(clienthost, ns.pop('port'))
+
+    module = ns.pop('module')
+    filename = ns.pop('filename')
+    if module is None:
+        args.name = filename
+        args.kind = 'script'
+    else:
+        args.name = module
+        args.kind = 'module'
+    #if argv[-1] != args.name or (module and argv[-1] != '-m'):
+    #    parser.error('script/module must be last arg')
+
+    return args
+
+
+def main(addr, name, kind, extra=(), nodebug=False):
+    if nodebug:
+        run_main(addr, name, kind, *extra)
+    else:
+        debug_main(addr, name, kind, *extra)
+
+
+if __name__ == '__main__':
+    args, extra = parse_args()
+    main(args.address, args.name, args.kind, extra, nodebug=args.nodebug)
