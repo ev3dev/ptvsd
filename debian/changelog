@@ -1,3 +1,9 @@
+ptvsd (4.1.1~a1-1ev3dev1) stable; urgency=medium
+
+  * New upstream version 4.1.1~a1
+
+ -- David Lechner <david@lechnology.com>  Tue, 22 May 2018 16:50:13 -0500
+
 ptvsd (3.2.1-1ev3dev1) testing; urgency=medium
 
   * Imported Upstream version 3.2.1
