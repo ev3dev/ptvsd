@@ -4,6 +4,8 @@
 
 set -e
 
+export SKIP_CYTHON_BUILD=1
+
 source=$(dpkg-parsechangelog -S Source)
 version=$(dpkg-parsechangelog -S Version)
 distribution=$(dpkg-parsechangelog -S Distribution)
