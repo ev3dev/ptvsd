@@ -1,3 +1,9 @@
+ptvsd (4.1.1~a1-1ev3dev2) stable; urgency=medium
+
+  * debian: add pyrremove to exclude python2 stuff from python3 package
+
+ -- David Lechner <david@lechnology.com>  Wed, 23 May 2018 23:08:59 -0500
+
 ptvsd (4.1.1~a1-1ev3dev1) stable; urgency=medium
 
   * New upstream version 4.1.1~a1
