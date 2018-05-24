@@ -1,6 +1,4 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: python-gattlib
-Source: https://bitbucket.org/OscarAcena/pygattlib
 
 Files: debian/*
 Copyright: 2017 David Lechner <david@lechnology.com>
