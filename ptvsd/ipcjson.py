@@ -14,10 +14,14 @@ from __future__ import print_function, with_statement, absolute_import
 import errno
 import itertools
 import json
+import os
 import os.path
-import socket
+from socket import create_connection
 import sys
+import time
 import traceback
+
+from .socket import TimeoutError, convert_eof
 
 
 _TRACE = None
@@ -27,6 +31,10 @@ SKIP_TB_PREFIXES = [
         os.path.dirname(
             os.path.abspath(__file__))),
 ]
+
+TIMEOUT = os.environ.get('PTVSD_SOCKET_TIMEOUT')
+if TIMEOUT:
+    TIMEOUT = float(TIMEOUT)
 
 
 if sys.version_info[0] >= 3:
@@ -71,18 +79,24 @@ class SocketIO(object):
     # TODO: docstring
 
     def __init__(self, *args, **kwargs):
-        super(SocketIO, self).__init__(*args, **kwargs)
-        self.__buffer = to_bytes('')
-        self.__port = kwargs.get('port')
-        self.__socket = kwargs.get('socket')
-        self.__own_socket = kwargs.get('own_socket', True)
-        self.__logfile = kwargs.get('logfile')
-        if self.__socket is None and self.__port is None:
-            raise ValueError(
+        port = kwargs.pop('port', None)
+        socket = kwargs.pop('socket', None)
+        own_socket = kwargs.pop('own_socket', True)
+        logfile = kwargs.pop('logfile', None)
+        if socket is None:
+            if port is None:
+                raise ValueError(
                     "A 'port' or a 'socket' must be passed to SocketIO initializer as a keyword argument.")  # noqa
-        if self.__socket is None:
-            self.__socket = socket.create_connection(
-                    ('127.0.0.1', self.__port))
+            addr = ('127.0.0.1', port)
+            socket = create_connection(addr)
+            own_socket = True
+        super(SocketIO, self).__init__(*args, **kwargs)
+
+        self.__buffer = to_bytes('')
+        self.__port = port
+        self.__socket = socket
+        self.__own_socket = own_socket
+        self.__logfile = logfile
 
     def _send(self, **payload):
         # TODO: docstring
@@ -233,6 +247,10 @@ class IpcChannel(object):
     # TODO: docstring
 
     def __init__(self, *args, **kwargs):
+        timeout = kwargs.pop('timeout', None)
+        if timeout is None:
+            timeout = TIMEOUT
+        super(IpcChannel, self).__init__(*args, **kwargs)
         # This class is meant to be last in the list of base classes
         # Don't call super because object's __init__ doesn't take arguments
         try:
@@ -244,6 +262,8 @@ class IpcChannel(object):
         self.__exit = False
         self.__lock = thread.allocate_lock()
         self.__message = []
+        self._timeout = timeout
+        self._fail_after = None
 
     def close(self):
         # TODO: docstring
@@ -278,29 +298,34 @@ class IpcChannel(object):
 
     def process_messages(self):
         # TODO: docstring
-        while True:
-            if self.process_one_message():
-                return
+        if self._timeout is not None:
+            self._fail_after = time.time() + self._timeout
+        while not self.__exit:
+            try:
+                self.process_one_message()
+                _trace('self.__exit is ', self.__exit)
+            except Exception:
+                if not self.__exit:
+                    raise
+                # TODO: log the error?
 
     def process_one_message(self):
         # TODO: docstring
         try:
             msg = self.__message.pop(0)
         except IndexError:
-            try:
+            with convert_eof():
                 self._wait_for_message()
-            except OSError as exc:
-                if exc.errno == errno.EBADF or self.__exit:  # socket closed
-                    return self.__exit
-                raise
-            except Exception:
-                if self.__exit:
-                    return True
-                raise
             try:
                 msg = self.__message.pop(0)
             except IndexError:
-                return self.__exit
+                # No messages received.
+                if self._fail_after is not None:
+                    if time.time() < self._fail_after:
+                        raise TimeoutError('connection closed?')
+                raise EOFError('no more messages')
+        if self._fail_after is not None:
+            self._fail_after = time.time() + self._timeout
 
         _trace('Received ', msg)
 
@@ -318,9 +343,6 @@ class IpcChannel(object):
         except Exception:
             _trace('Error ', traceback.format_exc)
             traceback.print_exc()
-
-        _trace('self.__exit is ', self.__exit)
-        return self.__exit
 
     def on_request(self, request):
         # TODO: docstring

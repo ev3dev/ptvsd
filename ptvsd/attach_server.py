@@ -2,29 +2,20 @@
 # Licensed under the MIT License. See LICENSE in the project root
 # for license information.
 
-import threading
+from ptvsd._remote import (
+    attach as ptvsd_attach,
+    enable_attach as ptvsd_enable_attach,
+    _pydevd_settrace,
+)
+from ptvsd.wrapper import debugger_attached
 
-# TODO: Why import run_module & run_file?
-from ptvsd._main import (  # noqa
-    run_module, run_file, enable_attach as ptvsd_enable_attach,
-)
-import pydevd
-
-# TODO: Why import these?
-from _pydevd_bundle.pydevd_custom_frames import (  # noqa
-    CustomFramesContainer, custom_frames_container_init,
-)
-from _pydevd_bundle.pydevd_additional_thread_info import (
-    PyDBAdditionalThreadInfo,
-)
-from _pydevd_bundle.pydevd_comm import (
-    get_global_debugger, CMD_THREAD_SUSPEND,
-)
+WAIT_TIMEOUT = 1.0
 
 DEFAULT_HOST = '0.0.0.0'
 DEFAULT_PORT = 5678
 
-_attached = threading.Event()
+_debug_current_thread = None
+_pending_threads = set()
 
 
 def wait_for_attach(timeout=None):
@@ -37,7 +28,7 @@ def wait_for_attach(timeout=None):
     timeout : float, optional
         The timeout for the operation in seconds (or fractions thereof).
     """
-    _attached.wait(timeout)
+    debugger_attached.wait(timeout)
 
 
 def enable_attach(address=(DEFAULT_HOST, DEFAULT_PORT), redirect_output=True):
@@ -68,30 +59,64 @@ def enable_attach(address=(DEFAULT_HOST, DEFAULT_PORT), redirect_output=True):
     attached. Any threads that are already running before this function is
     called will not be visible.
     """
-    if get_global_debugger() is not None:
+    if is_attached():
         return
-    _attached.clear()
-    ptvsd_enable_attach(address, redirect_output, on_attach=_attached.set)
+    debugger_attached.clear()
+
+    # Ensure port is int
+    port = address[1]
+    address = (address[0], port if type(port) is int else int(port))
+
+    ptvsd_enable_attach(
+        address,
+        redirect_output=redirect_output,
+    )
+
+
+def attach(address, redirect_output=True):
+    """Attaches this process to the debugger listening on a given address.
+
+    Parameters
+    ----------
+    address : (str, int), optional
+        Specifies the interface and port on which the debugger is listening
+        for TCP connections. It is in the same format as used for
+        regular sockets of the `socket.AF_INET` family, i.e. a tuple of
+        ``(hostname, port)``.
+    redirect_output : bool, optional
+        Specifies whether any output (on both `stdout` and `stderr`) produced
+        by this program should be sent to the debugger. Default is ``True``.
+    """
+    if is_attached():
+        return
+    debugger_attached.clear()
+
+    # Ensure port is int
+    port = address[1]
+    address = (address[0], port if type(port) is int else int(port))
+
+    ptvsd_attach(address, redirect_output=redirect_output)
+
+
+# TODO: Add disable_attach()?
 
 
 def is_attached():
     """Returns ``True`` if debugger is attached, ``False`` otherwise."""
-    return _attached.isSet()
+    return debugger_attached.isSet()
 
 
 def break_into_debugger():
     """If a remote debugger is attached, pauses execution of all threads,
     and breaks into the debugger with current thread as active.
     """
-    debugger = get_global_debugger()
-    if not _attached.isSet() or debugger is None:
+    if not is_attached():
         return
 
-    thread = pydevd.threadingCurrentThread()
-    try:
-        additional_info = thread.additional_info
-    except AttributeError:
-        additional_info = PyDBAdditionalThreadInfo()
-        thread.additional_info = additional_info
-
-    debugger.set_suspend(thread, CMD_THREAD_SUSPEND)
+    import sys
+    _pydevd_settrace(
+        suspend=True,
+        trace_only_current_thread=True,
+        patch_multiprocessing=False,
+        stop_at_frame=sys._getframe().f_back,
+    )
