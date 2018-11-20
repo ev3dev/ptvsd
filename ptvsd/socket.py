@@ -1,9 +1,32 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License. See LICENSE in the project root
+# for license information.
+
 from __future__ import absolute_import
 
 from collections import namedtuple
 import contextlib
 import errno
+import platform
 import socket
+try:
+    from urllib.parse import urlparse
+except ImportError:
+    from urlparse import urlparse
+
+
+try:
+    ConnectionError  # noqa
+    BrokenPipeError  # noqa
+    ConnectionResetError  # noqa
+except NameError:
+    class BrokenPipeError(Exception):
+        # EPIPE and ESHUTDOWN
+        pass
+
+    class ConnectionResetError(Exception):
+        # ECONNRESET
+        pass
 
 
 NOT_CONNECTED = (
@@ -11,14 +34,55 @@ NOT_CONNECTED = (
     errno.EBADF,
 )
 
+CLOSED = (
+    errno.EPIPE,
+    errno.ESHUTDOWN,
+    errno.ECONNRESET,
+    # Windows
+    10038,  # "An operation was attempted on something that is not a socket"
+    10058,
+)
 
-def create_server(host, port):
+EOF = NOT_CONNECTED + CLOSED
+
+
+@contextlib.contextmanager
+def convert_eof():
+    """A context manager to convert some socket errors into EOFError."""
+    try:
+        yield
+    except ConnectionResetError:
+        raise EOFError
+    except BrokenPipeError:
+        raise EOFError
+    except OSError as exc:
+        if exc.errno in EOF:
+            raise EOFError
+        raise
+
+
+class TimeoutError(socket.timeout):
+    """A socket timeout happened."""
+
+
+def is_socket(sock):
+    """Return True if the object can be used as a socket."""
+    return isinstance(sock, socket.socket)
+
+
+def create_server(host, port, timeout=None):
     """Return a local server socket listening on the given port."""
     if host is None:
         host = 'localhost'
     server = _new_sock()
-    server.bind((host, port))
-    server.listen(1)
+    try:
+        server.bind((host, port))
+        if timeout is not None:
+            server.settimeout(timeout)
+        server.listen(1)
+    except Exception:
+        server.close()
+        raise
     return server
 
 
@@ -31,7 +95,19 @@ def _new_sock():
     sock = socket.socket(socket.AF_INET,
                          socket.SOCK_STREAM,
                          socket.IPPROTO_TCP)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if platform.system() == 'Windows':
+        try:
+            sock.ioctl(socket.SIO_LOOPBACK_FAST_PATH, True)
+        except AttributeError:
+            pass  # Not supported in python 2.* or <3.6
+        except OSError as ose:
+            if ose.winerror == 10045:  # Not supported by OS
+                pass
+            else:
+                raise
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     return sock
 
 
@@ -43,6 +119,83 @@ def ignored_errno(*ignored):
     except OSError as exc:
         if exc.errno not in ignored:
             raise
+
+
+class KeepAlive(namedtuple('KeepAlive', 'interval idle maxfails')):
+    """TCP keep-alive settings."""
+
+    INTERVAL = 3  # seconds
+    IDLE = 1  # seconds after idle
+    MAX_FAILS = 5
+
+    @classmethod
+    def from_raw(cls, raw):
+        """Return the corresponding KeepAlive."""
+        if raw is None:
+            return None
+        elif isinstance(raw, cls):
+            return raw
+        elif isinstance(raw, (str, int, float)):
+            return cls(raw)
+        else:
+            try:
+                raw = dict(raw)
+            except TypeError:
+                return cls(*raw)
+            else:
+                return cls(**raw)
+
+    def __new__(cls, interval=None, idle=None, maxfails=None):
+        self = super(KeepAlive, cls).__new__(
+            cls,
+            float(interval) if interval or interval == 0 else cls.INTERVAL,
+            float(idle) if idle or idle == 0 else cls.IDLE,
+            float(maxfails) if maxfails or maxfails == 0 else cls.MAX_FAILS,
+        )
+        return self
+
+    def apply(self, sock):
+        """Set the keepalive values on the socket."""
+        sock.setsockopt(socket.SOL_SOCKET,
+                        socket.SO_KEEPALIVE,
+                        1)
+        interval = self.interval
+        idle = self.idle
+        maxfails = self.maxfails
+        try:
+            if interval > 0:
+                sock.setsockopt(socket.IPPROTO_TCP,
+                                socket.TCP_KEEPINTVL,
+                                interval)
+            if idle > 0:
+                sock.setsockopt(socket.IPPROTO_TCP,
+                                socket.TCP_KEEPIDLE,
+                                idle)
+            if maxfails >= 0:
+                sock.setsockopt(socket.IPPROTO_TCP,
+                                socket.TCP_KEEPCNT,
+                                maxfails)
+        except AttributeError:
+            # mostly linux-only
+            pass
+
+
+def connect(sock, addr, keepalive=None):
+    """Return the client socket for the next connection."""
+    if addr is None:
+        if keepalive is None or keepalive is True:
+            keepalive = KeepAlive()
+        elif keepalive:
+            keepalive = KeepAlive.from_raw(keepalive)
+        client, _ = sock.accept()
+        if keepalive:
+            keepalive.apply(client)
+        return client
+    else:
+        if keepalive:
+            raise NotImplementedError
+        sock.connect(addr)
+        return sock
 
 
 def shut_down(sock, how=socket.SHUT_RDWR, ignored=NOT_CONNECTED):
@@ -64,18 +217,35 @@ class Address(namedtuple('Address', 'host port')):
     """An IP address to use for sockets."""
 
     @classmethod
-    def from_raw(cls, raw):
+    def from_raw(cls, raw, defaultport=None):
         """Return an address corresponding to the given data."""
         if isinstance(raw, cls):
             return raw
-        if isinstance(raw, str):
-            raise NotImplementedError
-        try:
-            kwargs = dict(**raw)
-        except TypeError:
-            return cls(*raw)
+        elif isinstance(raw, int):
+            return cls(None, raw)
+        elif isinstance(raw, str):
+            if raw == '':
+                return cls('', defaultport)
+            parsed = urlparse(raw)
+            if not parsed.netloc:
+                if parsed.scheme:
+                    raise ValueError('invalid address {!r}'.format(raw))
+                return cls.from_raw('x://' + raw, defaultport=defaultport)
+            return cls(
+                parsed.hostname or '',
+                parsed.port if parsed.port else defaultport,
+            )
+        elif not raw:
+            return cls(None, defaultport)
         else:
-            return cls(**kwargs)
+            try:
+                kwargs = dict(**raw)
+            except TypeError:
+                return cls(*raw)
+            else:
+                kwargs.setdefault('host', None)
+                kwargs.setdefault('port', defaultport)
+                return cls(**kwargs)
 
     @classmethod
     def as_server(cls, host, port):
@@ -88,6 +258,8 @@ class Address(namedtuple('Address', 'host port')):
         return cls(host, port, isserver=False)
 
     def __new__(cls, host, port, **kwargs):
+        if host == '*':
+            host = ''
         isserver = kwargs.pop('isserver', None)
         if isserver is None:
             isserver = (host is None or host == '')
@@ -107,8 +279,8 @@ class Address(namedtuple('Address', 'host port')):
     def __init__(self, *args, **kwargs):
         if self.port is None:
             raise TypeError('missing port')
-        if self.port <= 0 or self.port > 65535:
-            raise ValueError('port must be positive int < 65535')
+        if self.port < 0 or self.port > 65535:
+            raise ValueError('port must be non-negative int < 65535')
 
     def __repr__(self):
         orig = super(Address, self).__repr__()
