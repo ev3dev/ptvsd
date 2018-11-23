@@ -1,3 +1,9 @@
+ptvsd (4.2.0-1ev3dev2) stable; urgency=medium
+
+  * debian: update pyremove path for upstream change
+
+ -- David Lechner <david@lechnology.com>  Fri, 23 Nov 2018 11:48:15 -0600
+
 ptvsd (4.2.0-1ev3dev1) stable; urgency=medium
 
   * New upstream version 4.2.0
