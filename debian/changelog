@@ -1,3 +1,9 @@
+ptvsd (4.2.0-1ev3dev3) testing; urgency=medium
+
+  * target buster
+
+ -- David Lechner <david@lechnology.com>  Mon, 18 Feb 2019 20:27:53 -0600
+
 ptvsd (4.2.0-1ev3dev2) stable; urgency=medium
 
   * debian: update pyremove path for upstream change
