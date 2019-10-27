@@ -4,6 +4,9 @@
 [![Build Status](https://travis-ci.org/Microsoft/ptvsd.svg?branch=master)](https://travis-ci.org/Microsoft/ptvsd)
 [![GitHub](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://raw.githubusercontent.com/Microsoft/ptvsd/master/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/ptvsd.svg)](https://pypi.org/project/ptvsd/)
+[![PyPI](https://img.shields.io/pypi/pyversions/ptvsd.svg)](https://pypi.org/project/ptvsd/)
+
+This debugger is based on the Debug Adapter Protocol for VS Code: [debugProtocol.json](https://github.com/Microsoft/vscode-debugadapter-node/blob/master/debugProtocol.json)
 
 ## `ptvsd` CLI Usage
 ### Debugging a script file
@@ -28,7 +31,7 @@ To run a module, use the `-m` switch instead of filename:
 ```console
 -m ptvsd --host localhost --port 5678 -m mymodule
 ```
-Same as with scripts, command line arguments can be passed to the module by specifying them after the module name. All other ptvsd switches work identically in this mode; in particular, `--wait` can be used to block execution until debugger attaches.
+Same as with scripts, command line arguments can be passed to the module by specifying them after the module name. All other ptvsd switches work identically in this mode; in particular, `--wait` can be used to block execution until the debugger attaches.
 
 ### Attaching to a running process by ID
 The following command injects the debugger into a process with a given PID that is running Python code. Once the command returns, a ptvsd server is running within the process, as if that process was launched via `-m ptvsd` itself.
@@ -45,8 +48,8 @@ ptvsd.enable_attach()
 ...
 ```
 
-### Waiting for debugger to attach
-Use the `ptvsd.wait_for_attach()` function to block program execution until debugger is attached.
+### Waiting for the debugger to attach
+Use the `ptvsd.wait_for_attach()` function to block program execution until the debugger is attached.
 ```python
 import ptvsd
 ptvsd.enable_attach()
@@ -55,7 +58,7 @@ ptvsd.wait_for_attach()  # blocks execution until debugger is attached
 ```
 
 ### `breakpoint()` function
-In Python 3.7 and above, `ptvsd` supports the standard `breakpoint()` function. Use `ptvsd.break_into_debugger()` function for similar behavior and compatibility with older versions of Python (3.6 and below). If the debugger is attached when either of these functions are invoked, it will pause execution on the calling line, as if it had a breakpoint set. If there's no debugger attached, the functions do nothing, and code continues to execute normally.
+In Python 3.7 and above, `ptvsd` supports the standard `breakpoint()` function. Use `ptvsd.break_into_debugger()` function for similar behavior and compatibility with older versions of Python (3.6 and below). If the debugger is attached when either of these functions is invoked, it will pause execution on the calling line, as if it had a breakpoint set. If there's no debugger attached, the functions do nothing, and the code continues to execute normally.
 ```python
 import ptvsd
 ptvsd.enable_attach()
@@ -106,3 +109,20 @@ while True:
     ]
 }
 ```
+
+## Debugger logging
+
+To enable debugger internal logging via CLI, the `--log-dir` switch can be used:
+```console
+-m ptvsd --log-dir path/to/logs ...
+```
+
+When using `enable_attach`, the same can be done with `log_dir` argument:
+```py
+ptvsd.enable_attach(log_dir='path/to/logs')
+```
+
+In both cases, the environment variable `PTVSD_LOG_DIR` can also be set to the same effect.
+
+When logging is enabled, ptvsd will create a log file with a name `ptvsd-<pid>.log` in the specified directory, where `<pid>` is the ID of the process being debugged. When subprocess debugging is enabled, a separate log is created for every subprocess.
+
