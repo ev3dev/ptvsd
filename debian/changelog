@@ -1,3 +1,9 @@
+ptvsd (5.0.0~a5-1ev3dev1) buster; urgency=medium
+
+  * New upstream version 5.0.0~a5
+
+ -- David Lechner <david@lechnology.com>  Sun, 27 Oct 2019 16:03:58 -0500
+
 ptvsd (4.2.0-1ev3dev3) testing; urgency=medium
 
   * target buster
