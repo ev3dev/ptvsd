@@ -1,3 +1,9 @@
+ptvsd (5.0.0~a5-1ev3dev2) buster; urgency=medium
+
+  * debian: fix pyremove
+
+ -- David Lechner <david@lechnology.com>  Sat, 23 Nov 2019 21:51:31 -0600
+
 ptvsd (5.0.0~a5-1ev3dev1) buster; urgency=medium
 
   * New upstream version 5.0.0~a5
